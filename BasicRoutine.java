@@ -4,6 +4,12 @@ import java.util.HashMap;
 import org.eclipse.californium.core.CoapHandler;
 import org.eclipse.californium.core.CoapResponse;
 
+//sockets
+import java.net.InetSocketAddress;
+import java.net.SocketException;
+import java.net.Socket;
+import java.net.ServerSocket;
+
 //openCV
 import org.opencv.core.Core;
 import org.opencv.core.Mat;
@@ -80,13 +86,89 @@ public class BasicRoutine extends org.reroutlab.code.auav.routines.AuavRoutines{
 			System.out.println("BasicRoutine: " + resp);
 			rtnLock("free");
 			
-			//read image into openCV and classify
-			if(classify(fileName))
-				System.out.println("It's a selfie");
-			else
-				System.out.println("Not a selfie");
-			
+			System.out.println("Invoking camera driver using dmp command");
+			//dump image data to .dat file in given directory for picTrace driver
+			succ = invokeDriver("org.reroutlab.code.auav.drivers.CaptureImageDriver",
+					    "dc-dmp-dp=AUAVsim", chResp);
+			rtnSpin();
+			System.out.println("BasicRoutine: " + resp);
+			rtnLock("free");
 
+			System.out.println("Invoking PicTrace to set trace directory");
+			//read index.dat file in provided directory
+			succ = invokeDriver("org.reroutlab.code.auav.drivers.PicTraceDriver",
+					    "dc=dir-dp="+fileName+"-dp-AUAVsim", chResp);
+			rtnSpin();
+			System.out.println("BasicRoutine: "+ resp);
+			rtnLock("free");			
+
+			byte[] pic;
+			int picNum = 0;
+			do{
+				System.out.println("Querying PicTrace for image data for image: "+picNum);
+				pic = new byte[0];			
+				//get images from pictrace h2 database
+				byte[] buff = new byte[1024];
+				String query = "SELECT * FROM data";
+				Socket client = null;
+
+				succ = invokeDriver("org.reroutlab.code.auav.drivers.PicTraceDriver",
+						    "dc=qrb-dp="+query+"-dp="+picNum+"-dp=AUAVsim", chResp);
+				rtnSpin();
+				try{
+					client = new Socket("127.0.0.1", 44044); //connect to pictrace driver
+					int k = -1;
+					while((k = client.getInputStream().read(buff, 0, buff.length)) > -1){
+						byte[] tbuff = new byte[pic.length + k];
+						System.arraycopy(pic, 0, tbuff, 0, pic.length);
+						System.arraycopy(buff, 0, tbuff, pic.length, k);
+						pic = tbuff;
+					}
+					System.out.println(pic.length + "Bytes read from PicTrace");
+					client.close();
+				} catch(Exception e){
+					System.out.println("Problem reading from PicTrace");
+					e.printStackTrace();
+				}
+				
+				System.out.println("BasicRoutine: "+ resp);
+				rtnLock("free");	
+				
+				if(pic.length == 0) {
+					System.out.println("No Picture "+picNum);
+					break;
+				}
+				//write bytes to image	
+				try{
+					OutputStream out = new FileOutputStream("../trace.data/routine/test.jpg");
+					out.write(pic);
+					out.flush();
+					out.close();
+				} catch(Exception e){
+					System.out.println("Problem writing image");
+					e.printStackTrace();
+				}
+
+
+				System.out.println("bytes read: "+pic.length);
+				//read image into openCV and classify
+				if(classify("../trace.data/routine/test.jpg")){
+					try{
+						OutputStream out = new FileOutputStream("../trace.data/selfies/selfie"+picNum+".jpg");
+						out.write(pic);
+						out.flush();
+						out.close();
+					} catch(Exception e){
+						System.out.println("Problem writing image");
+						e.printStackTrace();
+					}
+					System.out.println("It's a selfie");
+				}
+				else
+					System.out.println("Not a selfie");
+				
+				++picNum;
+			} while(pic.length > 0);
 			succ = invokeDriver("org.reroutlab.code.auav.drivers.FlyDroneDriver",
 						    "dc=lnd-dp=AUAVsim", chResp );
 			rtnSpin();	
@@ -103,7 +185,7 @@ public class BasicRoutine extends org.reroutlab.code.auav.routines.AuavRoutines{
                     //perform face detection (magic)
                     MatOfRect faceDetections = new MatOfRect();
                     faceDetector.detectMultiScale(image, faceDetections);
-    
+    			
                     return faceDetections.toArray().length > 0;
           	}
 
